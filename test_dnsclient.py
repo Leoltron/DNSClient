@@ -187,10 +187,11 @@ class DNSClientTests(unittest.TestCase):
 
     def test_resolve_host_non_recursive(self):
         self.assertEqual('213.196.34.228',
-                         self.client.hostname_to_ip_non_recursive("bash.im")[
-                             0][0])
+                         self.client.hostname_to_ip_non_recursive("bash.im",
+                                    dns_server_address='198.41.0.4')[0][0])
 
     def test_resolve_host_non_recursive_ipv6(self):
         self.assertEqual('2620:0:862:ed1a:0:0:0:1',
                          self.client.hostname_to_ip_non_recursive(
-                             "ru.wikipedia.org", ipv6=True)[0][0])
+                             "ru.wikipedia.org", ipv6=True,
+                             dns_server_address='198.41.0.4')[0][0])

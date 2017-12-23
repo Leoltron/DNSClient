@@ -12,9 +12,9 @@ CLASS_IN = 0x0001
 RCODE_ERROR_MESSAGES = {
     1: "Format error",
     2: "Server failure",
-    3: "Name Error",
-    4: "Not Implemented",
-    5: "Refused"
+    3: "Name does not exists",
+    4: "Function is not implemented on a server",
+    5: "Server refused to handle record"
 }
 
 DEBUG = False
@@ -44,11 +44,10 @@ def get_ipv6_from_bytes(bytes_):
         [hex((bytes_[i] << 8) + bytes_[i + 1])[2:] for i in range(0, 16, 2)])
 
 
-def to_hex(bytes_):
-    result = ''
-    for b in bytes_:
-        result += hex(b)[2:].zfill(2).upper() + ' '
-    return result
+def to_hex(bytes_, line_length=16):
+    return '\n'.join(' '.join([hex(b)[2:].zfill(2).upper() for b in
+                               bytes_[start:start + line_length]]) for start in
+                     list(range(len(bytes_)))[::line_length])
 
 
 # noinspection SpellCheckingInspection
@@ -233,18 +232,44 @@ def decode_hostname(bytes_, start=0):
     return result, offset_from_start
 
 
-def send_and_read_udp(ip, port, message, print_content, tries=4):
+def send_and_read_udp(ip, port, message, print_content, tries=4, timeout=2):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(2)
+    sock.settimeout(timeout)
     try_ = 0
     while True:
         if print_content:
-            print("Sending " + to_hex(message))
+            print("Sending to " + ip + ":" + str(port) + " :\n" + to_hex(
+                message))
         sock.sendto(message, (ip, port))
         try:
             reply = sock.recv(1024)
             if print_content:
-                print("Received " + to_hex(reply))
+                print("Received:\n" + to_hex(reply))
+            return reply
+        except socket.timeout:
+            try_ += 1
+            if try_ > tries > 0:
+                raise TimeoutError("Out of tries")
+            print("Timeout has reached, trying again")
+
+
+def send_and_read_tcp(ip, port, message, print_content, tries=4, timeout=2):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try_ = 0
+    while True:
+        if print_content:
+            print("Sending to " + ip + ":" + str(port) + " :\n" + to_hex(
+                message))
+        try:
+            sock.connect((ip, port))
+            sock.send(len(message).to_bytes(length=2, byteorder='big') + message)
+            reply = sock.recv(1024)
+            reply_length = int.from_bytes(reply[0:2], byteorder='big')
+            reply = reply[2:2 + reply_length]
+            if print_content:
+                print("Received:\n" + to_hex(reply))
+            sock.close()
             return reply
         except socket.timeout:
             try_ += 1
@@ -263,7 +288,16 @@ def join_rslices(sep, list_):
 
 
 class DNSClient:
-    def __init__(self, print_message_contents):
+    def __init__(self, print_message_contents=False, transport_protocol='udp',
+                 timeout=4):
+        self.timeout = timeout
+        transport_protocol = transport_protocol.lower()
+        if transport_protocol == 'udp':
+            self.send_and_read = send_and_read_udp
+        elif transport_protocol == 'tcp':
+            self.send_and_read = send_and_read_tcp
+        else:
+            raise ValueError("Unsupported protocol: " + transport_protocol)
         self.print_message_contents = print_message_contents
         self.next_message_id = 1
         self.ipv4_cache = dict()
@@ -319,9 +353,10 @@ class DNSClient:
         question = form_host_address_internet_question(hostname, type_,
                                                        CLASS_IN)
 
-        message = send_and_read_udp(dns_server_address, port,
-                                    header + question,
-                                    self.print_message_contents)
+        message = self.send_and_read(dns_server_address, port,
+                                     header + question,
+                                     self.print_message_contents,
+                                     timeout=self.timeout)
         header_info = decode_message_header(message)
         result['is_auth'] = header_info['is_authoritative']
         response_code = header_info['rcode']
@@ -351,8 +386,9 @@ class DNSClient:
                                                        type_,
                                                        CLASS_IN)
 
-        reply_bytes = send_and_read_udp(server, port, header + question,
-                                        self.print_message_contents, )
+        reply_bytes = self.send_and_read(server, port, header + question,
+                                         self.print_message_contents,
+                                         timeout=self.timeout)
         reply = decode_dns_message(reply_bytes, errors='return_none')
         if reply == (None,) * 5:
             return False
@@ -383,7 +419,9 @@ class DNSClient:
                 auth = self.get_authorities(hostname)
                 if auth is not None:
                     if auth == last_authorities:
-                        raise RecursionError
+                        raise RecursionError("Search has come to a dead end. "
+                                             "Try allow recursion or use"
+                                             " another server")
                     else:
                         auth_server = auth[0]
                         auth_server_ip = self.hostname_to_ip_non_recursive(
@@ -391,7 +429,9 @@ class DNSClient:
                         self.ask_for_ip(hostname, auth_server_ip, port, ipv6,
                                         False)
                 elif asked_server:
-                    raise RecursionError
+                    raise RecursionError("Server can't handle non-recursive"
+                                         " requests, try allow recursion or "
+                                         "use another server")
                 else:
                     asked_server = True
                     self.ask_for_ip(hostname, dns_server_address, port, ipv6,

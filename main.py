@@ -27,51 +27,68 @@ def parse_args():
     parser.add_argument("-6", "--ipv6",
                         action="store_true",
                         help="Show a IPv6 address instead of IPv4")
-    parser.add_argument("-p", "--server-port",
-                        type=int, default=53,
-                        help="Custom DNS server port")
     parser.add_argument("-s", "--server-address", type=str,
-                        default='8.8.8.8',
+                        default='8.8.8.8:53',
                         help="Custom DNS server address")
     parser.add_argument("-a", "--show-authoritative", action='store_true',
                         help="Show if answer is authoritative")
     parser.add_argument("-d", "--debug", action='store_true',
                         help="Show hex dump of all packets received or sent")
+    parser.add_argument("-t", "--tcp", action='store_true',
+                        help="Use TCP protocol instead of UDP")
+    parser.add_argument("-m", "--timeout", type=int, default=4,
+                        help="Set timeouts for replies in seconds")
     return parser.parse_args()
+
+
+def parse_address(server_address: str):
+    if ":" in server_address:
+        split = server_address.split(':', 1)
+        return split[0], int(split[1])
+    return server_address, 53
 
 
 def main():
     parsed_args = parse_args()
-    client = DNSClient(parsed_args.debug)
+    protocol = 'tcp' if parsed_args.tcp else 'udp'
+    client = DNSClient(parsed_args.debug, transport_protocol=protocol,
+                       timeout=parsed_args.timeout)
 
     hostname = parsed_args.hostname
-    dns_server_name = parsed_args.server_address
-    dns_server_port = parsed_args.server_port
+    dns_server_name, dns_server_port = parse_address(
+        parsed_args.server_address)
     use_ipv6 = parsed_args.ipv6
     show_is_auth = parsed_args.show_authoritative
-    if parsed_args.recursion:
-        ips = client.hostname_to_ip_non_recursive(hostname,
-                                                  dns_server_name,
-                                                  dns_server_port,
-                                                  use_ipv6)
-        if show_is_auth:
-            ips = map(
-                lambda ip: ip[0] + " - " + ("Authoritative" if ip[1]
-                else "Non-authoritative"), ips)
+    try:
+        if parsed_args.recursion:
+            ips = client.hostname_to_ip_non_recursive(hostname,
+                                                      dns_server_name,
+                                                      dns_server_port,
+                                                      use_ipv6)
+            if show_is_auth:
+                ips = map(
+                    lambda ip: ip[0] + " - " + ("Authoritative" if ip[1]
+                    else "Non-authoritative"), ips)
+            else:
+                ips = [ip[0] for ip in ips]
+            print_key_values_as_tree({hostname: list(ips)})
         else:
-            ips = [ip[0] for ip in ips]
-        print_key_values_as_tree({hostname: list(ips)})
-    else:
-        result = client.hostname_to_ip(hostname,
-                                       dns_server_address=dns_server_name,
-                                       port=dns_server_port,
-                                       ipv6=use_ipv6)
-        if show_is_auth:
-            print(
-                ("Authoritative" if result['is_auth'] else "Non-authoritative") \
-                + ' answer')
-        result.pop('is_auth')
-        print_key_values_as_tree(result)
+            result = client.hostname_to_ip(hostname,
+                                           dns_server_address=dns_server_name,
+                                           port=dns_server_port,
+                                           ipv6=use_ipv6)
+            if result:
+                print("Address not found.")
+                return
+            if show_is_auth:
+                print(
+                    ("Authoritative" if result[
+                        'is_auth'] else "Non-authoritative") \
+                    + ' answer')
+            result.pop('is_auth')
+            print_key_values_as_tree(result)
+    except Exception as e:
+        print(str(e))
 
 
 if __name__ == '__main__':
