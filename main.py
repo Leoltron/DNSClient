@@ -77,7 +77,7 @@ def main():
                                            dns_server_address=dns_server_name,
                                            port=dns_server_port,
                                            ipv6=use_ipv6)
-            if result:
+            if len(result) <= 1:
                 print("Address not found.")
                 return
             if show_is_auth:
